@@ -1,0 +1,24 @@
+{
+  "name": "woodford-mailserver",
+  "version": "1.0.0",
+  "description": "Ingress mail server",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+ssh://git@github.com/zqsd/woodford-mailserver.git"
+  },
+  "keywords": [
+    "ingress",
+    "mail",
+    "damagereport"
+  ],
+  "author": "Clément Wiz <wiz@haxx.es>",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/zqsd/woodford-mailserver/issues"
+  },
+  "homepage": "https://github.com/zqsd/woodford-mailserver#readme"
+}
