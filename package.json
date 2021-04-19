@@ -1,10 +1,12 @@
 {
-  "name": "woodford-mailserver",
-  "version": "1.0.0",
-  "description": "Ingress mail server",
-  "main": "index.js",
+  "name": "woodford",
+  "version": "2.0.0",
+  "description": "Ingress damage report dispatcher",
+  "main": "index.mjs",
+  "type": "module",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "dev": "concurrently \"nodemon -r dotenv/config index.mjs\" \"lt --port 8080 --subdomain https://woodford.localtunnel.me\""
   },
   "repository": {
     "type": "git",
@@ -13,12 +15,28 @@
   "keywords": [
     "ingress",
     "mail",
-    "damagereport"
+    "damagereport",
+    "telegram"
   ],
   "author": "Clément Wiz <wiz@haxx.es>",
   "license": "MIT",
   "bugs": {
     "url": "https://github.com/zqsd/woodford-mailserver/issues"
   },
-  "homepage": "https://github.com/zqsd/woodford-mailserver#readme"
+  "homepage": "https://github.com/zqsd/woodford-mailserver#readme",
+  "dependencies": {
+    "bull": "^3.22.0",
+    "cockroach": "github:zqsd/cockroach",
+    "dkim": "^0.7.2",
+    "ingress-dmgparser": "https://github.com/zqsd/ingress-dmgparser.git",
+    "pg-format": "^1.0.4",
+    "smtp-server": "^3.8.0",
+    "telegraf": "^4.3.0"
+  },
+  "devDependencies": {
+    "concurrently": "^6.0.2",
+    "dotenv": "^8.2.0",
+    "localtunnel": "^2.0.1",
+    "nodemon": "^2.0.7"
+  }
 }
