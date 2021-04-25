@@ -2,8 +2,9 @@ CREATE TYPE team AS ENUM ('neutral', 'resistance', 'enlightened');
 
 CREATE TABLE portals (
 	"id" UUID NOT NULL DEFAULT gen_random_uuid(),
-	"name" STRING NOT NULL,
-	"address" STRING NOT NULL,
+	"name" STRING,
+	"address" STRING,
+	"lname" STRING AS (lower("name")) STORED
 	"image" STRING NULL,
 	"latE6" INT NOT NULL CHECK ("latE6" >= -90e6) CHECK ("latE6" <= 90e6),
 	"lngE6" INT NOT NULL CHECK ("lngE6" >= -180e6) CHECK ("lngE6" <= 180e6),

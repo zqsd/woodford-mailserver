@@ -1,9 +1,18 @@
 import Redis from 'ioredis';
 import db from './db.mjs';
 import {Telegraf} from 'telegraf';
+import Redlock from 'redlock';
+import fs from 'fs';
+
+const redis = new Redis({host: process.env.REDIS});
+const redlock = new Redlock([redis]);
 
 const bot = new Telegraf(process.env.BOT_TOKEN)
-const redis = new Redis();
+
+redis.defineCommand("portalCountDamage", {
+    numberOfKeys: 3,
+    lua: fs.readFileSync('./damage.lua'),
+});
 
 function portalNameAddressKey(portal) {
     return `portal(na).subs:${portal.name, portal.address}`;
@@ -24,28 +33,87 @@ async function fetchSubscriptions() {
 }
 fetchSubscriptions();
 
-async function sendPortalAlert(chatId, portal, damage, agent) {
-    try {
+async function sendPortalAlert(chatId, portal, damage, attacker, report) {
+    const key = `portal(${portal.latitude},${portal.longitude}),${chatId}`;
+    const lock = await redlock.lock(key+'.lock', 1000);
+    const [attackers, resonatorsDestroyed, modsDestroyed, linksDestroyed, neutralized, cachedDataJson] = await redis.portalCountDamage(key, report.attackee, attacker.name, damage.resonators, damage.mods, damage.links.length, portal.team === 'neutralized' ? 1 : 0);
+    const cachedData = JSON.parse(cachedDataJson);
+
+    // check if message changed
+    const hash = `${Math.min(resonatorsDestroyed, 9)},${modsDestroyed},${linksDestroyed},${neutralized},${attackers.join(',')}`;
+
+    if(!cachedData || cachedData.hash !== hash) {
         const city = portal.address.split(', ').slice(-2, -1).join('').split(' ').slice(1);
         const pll = `${portal.latitude},${portal.longitude}`;
-        const text = `<a href="${portal.image}">&#8203;</a><a href="https://www.ingress.com/intel?z=17&pll=${pll}"><b>${portal.name}</b></a> @ <a href="https://www.google.com/maps?q=${pll}">${city}</a>
-attacked by <b>${agent.name}</b>`;
-        await bot.telegram.sendMessage(chatId, text, {
-            parse_mode: 'HTML',
-        });
-    }
-    catch(e) {
-        if(e.message === '400: Bad Request: chat not found') {
-            await Promise.all([
-                redis.spop(portalNameAddressKey(portal), chatId),
-                db.query('DELETE FROM portals_subscriptions WHERE id = $3 AND portal = (SELECT id FROM portals WHERE name = $1 AND address = $2)', [portal.name, portal.address, chatId]),
-            ]);
-            console.log(`removed portal ${portal.name} from chat ${chatId}`);
+        const intel = `https://intel.ingress.com/intel?z=17&pll=${pll}`;
+        const ingress = `https://ingress.com/launchapp`;    
+        const maps = `https://www.google.com/maps?q=${pll}`;
+
+        let text = `<a href="${portal.image}">&#8203;</a><a href="${ingress}"><b>${portal.name}</b></a> @ <a href="${intel}">${city}</a>
+attacked by ` + attackers.map(attacker => `<b>${attacker}</b>`).join(', ');
+
+        const destructions = [];
+        if(resonatorsDestroyed >= 9) {
+            destructions.push('<b>8+</b> resonators');
         }
-        else {
-            throw e;
+        else if(resonatorsDestroyed > 0) {
+            destructions.push(`<b>${resonatorsDestroyed}</b> resonator${resonatorsDestroyed != 1 ? 's' : ''}`);
+        }
+        if (modsDestroyed > 0) {
+            destructions.push(`<b>${modsDestroyed}</b> mod${modsDestroyed != 1 ? 's' : ''}`);
+        }
+        if(linksDestroyed > 0) {
+            destructions.push(`<b>${linksDestroyed}</b> mod${linksDestroyed != 1 ? 's' : ''}`);
+        }
+        if(destructions.length > 0) {
+            text += '\n' + destructions.join(', ') + ' destroyed';
+        }
+
+        
+        if(neutralized == 1) {
+            text += `\nneutralized`;
+        }
+        else if(neutralized > 1) {
+            text += `\nneutralized <b>${neutralized}</b> time${neutralized > 1 ? 's' : ''}`;
+        }
+
+        try {
+            if(cachedData?.messageId) {
+                try {
+                    await bot.telegram.editMessageText(chatId, cachedData.messageId, null, text, {
+                        parse_mode: 'HTML',
+                    });
+                }
+                catch(e) {console.error(e.message);}
+                await redis.hset(key, 'appdata', JSON.stringify({
+                    messageId: cachedData.messageId,
+                    hash,
+                }));
+            }
+            else {
+                const result = await bot.telegram.sendMessage(chatId, text, {
+                    parse_mode: 'HTML',
+                });
+                await redis.hset(key, 'appdata', JSON.stringify({
+                    messageId: result.message_id,
+                    hash,
+                }));
+            }
+        }
+        catch(e) {
+            if(e.message === '400: Bad Request: chat not found') {
+                await Promise.all([
+                    redis.spop(portalNameAddressKey(portal), chatId),
+                    db.query('DELETE FROM portals_subscriptions WHERE id = $3 AND portal = (SELECT id FROM portals WHERE name = $1 AND address = $2)', [portal.name, portal.address, chatId]),
+                ]);
+                console.log(`removed portal ${portal.name} from chat ${chatId}`);
+            }
+            else {
+                throw e;
+            }
         }
     }
+    await lock.unlock();
 }
 
 export default function pushDamagesFromReport(report) {
@@ -54,11 +122,21 @@ export default function pushDamagesFromReport(report) {
         const attacker = report.agents[damage.attacker];
         const subscriptions = await redis.smembers(portalNameAddressKey(portal));
 
-        console.log(`attack on ${portal.name} by ${attacker.name}`);
+        const damages = [];
+        if(damage.resonators > 0) {
+            damages.push(`${damage.resonators} resonators`);
+        }
+        if(damage.mods > 0) {
+            damages.push(`${damage.mods} mods`);
+        }
+        if(damage.links?.length > 0) {
+            damages.push(`${damage.links.length} links`);
+        }
+        console.log(`damage on ${portal.name} by ${attacker.name}: ${damages.join(', ')}`);
         //console.log(report.damages);
 
         return Promise.all(subscriptions.map(subscription => {
-            return sendPortalAlert(subscription, portal, damage, attacker);
+            return sendPortalAlert(subscription, portal, damage, attacker, report);
         }));
     }));
 }

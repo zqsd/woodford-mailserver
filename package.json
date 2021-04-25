@@ -6,7 +6,7 @@
   "type": "module",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "dev": "concurrently \"nodemon -r dotenv/config index.mjs\" \"lt --port 8080 --subdomain https://woodford.localtunnel.me\""
+    "dev": "nodemon -r dotenv/config index.mjs"
   },
   "repository": {
     "type": "git",
@@ -28,15 +28,15 @@
     "bull": "^3.22.0",
     "cockroach": "github:zqsd/cockroach",
     "dkim": "^0.7.2",
-    "ingress-dmgparser": "https://github.com/zqsd/ingress-dmgparser.git",
+    "ingress-dmgparser": "github:zqsd/ingress-dmgparser",
     "pg-format": "^1.0.4",
+    "redlock": "^4.2.0",
     "smtp-server": "^3.8.0",
     "telegraf": "^4.3.0"
   },
   "devDependencies": {
     "concurrently": "^6.0.2",
     "dotenv": "^8.2.0",
-    "localtunnel": "^2.0.1",
     "nodemon": "^2.0.7"
   }
 }

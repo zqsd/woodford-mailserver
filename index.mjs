@@ -117,5 +117,5 @@ const server = new SMTPServer({
 
 server.listen(process.env.MAIL_PORT);
 server.on('error', err => {
-    log.error('Error %s', err.message);
+    console.log('Error %s', err.message);
 });
