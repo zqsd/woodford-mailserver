@@ -31,7 +31,13 @@ bot.help((ctx) => ctx.reply('Send me a sticker'))
 
 bot.command('subs', async (ctx) => {
     const {rows: portals} = await pool.query('SELECT p.* FROM portals_subscriptions AS ps INNER JOIN portals AS p ON p.id = ps.portal WHERE ps.id = $1 ORDER BY name ASC', [ctx.chat.id]);
-    ctx.reply(JSON.stringify(portals, null, 4));
+
+    return ctx.reply('Subscribed to portals :', {
+        reply_markup: {
+            inline_keyboard: portals.map(portal => { return [{text: `📍 ${portal.name}`, callback_data: `portal.sub:${portal.id}`}]})
+                .concat([[{text: '➕ Search and add', switch_inline_query_current_chat: ''}]]),
+        },
+    });
 });
 
 bot.on('inline_query', async (ctx) => {
@@ -77,12 +83,12 @@ bot.on('inline_query', async (ctx) => {
             },
             reply_markup: {
                 inline_keyboard: [
-                    [{text: 'Subscribe', callback_data: `portal.sub:${portal.id}`}],
+                    [{text: '🔔 Add', callback_data: `portal.sub:${portal.id}`}], // 🔕
                 ],
             },
         };
     });
-    await ctx.answerInlineQuery(results, {
+    return await ctx.answerInlineQuery(results, {
         is_personal: true,
         cache_time: 0,
     });
