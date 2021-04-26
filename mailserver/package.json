@@ -2,11 +2,11 @@
   "name": "woodford",
   "version": "2.0.0",
   "description": "Ingress damage report dispatcher",
-  "main": "index.mjs",
+  "main": "main.mjs",
   "type": "module",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "dev": "nodemon -r dotenv/config index.mjs"
+    "dev": "nodemon -r dotenv/config main.mjs"
   },
   "repository": {
     "type": "git",
