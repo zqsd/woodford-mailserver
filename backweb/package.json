@@ -1,0 +1,27 @@
+{
+  "name": "woodford-web",
+  "version": "1.0.0",
+  "description": "Ingress damage report dispatcher bot",
+  "main": "main.mjs",
+  "type": "module",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "dev": "concurrently \"node -r dotenv/config main.mjs\" \"lt -p 8080 -s woodford\""
+  },
+  "keywords": [
+    "ingress"
+  ],
+  "author": "Clément Wiz",
+  "license": "MIT",
+  "devDependencies": {
+    "concurrently": "^6.0.2",
+    "dotenv": "^8.2.0",
+    "localtunnel": "git+https://github.com/zqsd/localtunnel.git"
+  },
+  "dependencies": {
+    "cockroach": "git+https://github.com/zqsd/cockroach.git",
+    "escape-html": "^1.0.3",
+    "express": "^4.17.1",
+    "telegraf": "^4.3.0"
+  }
+}
