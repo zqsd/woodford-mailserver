@@ -6,7 +6,8 @@
   "type": "module",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "dev": "concurrently \"node -r dotenv/config main.mjs\" \"lt -p 8080 -s woodford\""
+    "dev": "nodemon -r dotenv/config main.mjs",
+    "dev:tunnel": "concurrently \"npm run dev\" \"lt -p 8080 -s woodford\""
   },
   "keywords": [
     "ingress"
@@ -22,6 +23,7 @@
     "cockroach": "git+https://github.com/zqsd/cockroach.git",
     "escape-html": "^1.0.3",
     "express": "^4.17.1",
+    "ioredis": "^4.27.1",
     "telegraf": "^4.3.0"
   }
 }
