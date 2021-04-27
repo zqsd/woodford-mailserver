@@ -1,7 +1,10 @@
-import express from 'express';
+import Redis from 'ioredis';
+import express, { query } from 'express';
 import {Telegraf} from 'telegraf';
 import escape from 'escape-html';
 import pool from './db.mjs';
+
+const redis = new Redis({host: process.env.REDIS});
 
 
 function humanDistance(distance) {
@@ -26,19 +29,147 @@ if(token === undefined) {
 }
 
 const bot = new Telegraf(token);
-//bot.on('text', (ctx) => ctx.replyWithHTML('<b>Hello</b>'));
+
+async function onChosenInlineResult(ctx) {
+    // the ctx.chat.id is missing on chosen_inline_result event, so we store the inline_message_id and wait for a 'text' event
+    let data;
+    if(ctx.chosenInlineResult) {
+        const portalId = ctx.chosenInlineResult.result_id;
+        const key = `inlineResultLink:${portalId}`;
+        ([, [, data]] = await redis.multi()
+                   .hset(key, 'chosenInlineResult', JSON.stringify(ctx.chosenInlineResult))
+                   .hgetall(key)
+                   .expire(key, 10)
+                   .exec());
+    }
+    else {
+        const url = ctx.message.reply_markup?.inline_keyboard[0][0].url;
+        const start = `https://telegram.me/${bot.botInfo.username}?startgroup=`;
+        if(url?.startsWith(start)) {
+            const portalId = url.substr(start.length);
+            const key = `inlineResultLink:${portalId}`;
+            ([, [, data]] = await redis.multi()
+                    .hset(key, 'chat', JSON.stringify(ctx.chat))
+                    .hgetall(key)
+                    .expire(key, 10)
+                    .exec());
+        }        
+    }
+    if(data?.chat && data?.chosenInlineResult) {
+        const chat = JSON.parse(data.chat);
+        const chosenInlineResult = JSON.parse(data.chosenInlineResult);
+        const portalId = chosenInlineResult.result_id;
+        await displayPortal(ctx, portalId, chat.id, chosenInlineResult.inline_message_id);
+    }
+}
+
+bot.on('text', async (ctx, next) => {
+    // user clicked an inline query message
+    if(ctx.message.via_bot?.id === bot.botInfo.id) {
+        await onChosenInlineResult(ctx);
+    }
+    else {
+        return await next();
+    }
+});
+
+bot.on('chosen_inline_result', onChosenInlineResult);
+
+
 bot.help((ctx) => ctx.reply('Send me a sticker'))
 
-bot.command('subs', async (ctx) => {
-    const {rows: portals} = await pool.query('SELECT p.* FROM portals_subscriptions AS ps INNER JOIN portals AS p ON p.id = ps.portal WHERE ps.id = $1 ORDER BY name ASC', [ctx.chat.id]);
+async function listSubscriptions(ctx, chatId) {
+    const {rows: portals} = await pool.query('SELECT p.* FROM portals_subscriptions AS ps INNER JOIN portals AS p ON p.id = ps.portal WHERE ps.id = $1 ORDER BY name ASC', [chatId]);
 
-    return ctx.reply('Subscribed to portals :', {
+    const text = portals.length > 0 ? 'Subscribed to portals :' : 'No subscribed portal';
+    const extra = {
         reply_markup: {
-            inline_keyboard: portals.map(portal => { return [{text: `📍 ${portal.name}`, callback_data: `portal.sub:${portal.id}`}]})
+            inline_keyboard: portals.map(portal => { return [{text: `📍 ${portal.name}`, callback_data: `portal:${portal.id}:${chatId}`}]})
                 .concat([[{text: '➕ Search and add', switch_inline_query_current_chat: ''}]]),
         },
-    });
-});
+    };
+
+    const inlineMessageId = ctx.callbackQuery?.inline_message_id;
+
+    if(inlineMessageId) {
+        await ctx.telegram.editMessageText(null, null, inlineMessageId, text, extra);
+    }
+    else if(ctx.callbackQuery) {
+        await ctx.telegram.editMessageText(ctx.callbackQuery.message.chat.id, ctx.callbackQuery.message.message_id, null, text, extra);
+        await ctx.answerCbQuery();
+    }
+    else {
+        await ctx.reply(text, extra);
+    }
+}
+
+function portalText(portal) {
+    const ll = `${portal.latE6 / 1e6},${portal.lngE6 / 1e6}`;
+    const intel = `https://intel.ingress.com/intel?z=17&pll=${ll}`;
+    const maps = `https://www.google.com/maps?q=${ll}`;
+    const image = `${process.env.URL}/portal/${portal.id}/image`;
+    const ingress = 'https://ingress.com/launchapp';
+    return `<a href="${portal.image}">&#8203;</a><a href="${image}">📍</a> <a href="${ingress}"><b>${escape(portal.name)}</b></a>
+<a href="${maps}">🌍</a> <a href="${intel}">${escape(shortenAddress(portal.address))}</a>`;
+}
+
+async function displayPortal(ctx, portalId, chatId, inlineMessageId) {
+    const {rows: [portal]} = await pool.query('SELECT portals.*, portals_subscriptions.portal AS subscribed FROM portals LEFT JOIN portals_subscriptions ON portals.id = portals_subscriptions.portal AND portals_subscriptions.id = $2 WHERE portals.id = $1', [portalId, chatId]);
+    if(portal) {
+        const text = portalText(portal);
+        const extra = {
+            parse_mode: 'html',
+            reply_markup: {
+                inline_keyboard: [
+                    portal.subscribed ? [{ text: '🔕 Remove', callback_data: `portal.unsub:${portal.id}:${chatId}` }] : [{text: '🔔 Add', callback_data: `portal.sub:${portal.id}:${chatId}`}],
+                    [{text: '⮨ Back to list', callback_data: `subs.list:${chatId}`}],
+                ],
+            },
+        };
+
+        if(ctx.callbackQuery?.inline_message_id)
+            inlineMessageId = ctx.callbackQuery.inline_message_id;
+
+        if(inlineMessageId) {
+            await ctx.telegram.editMessageText(null, null, inlineMessageId, text, extra);
+        }
+        else if(ctx.callbackQuery) {
+            await ctx.telegram.editMessageText(chatId, ctx.callbackQuery.message.message_id, null, text, extra);
+        }
+        else {
+            await ctx.telegram.editMessageText(chatId, ctx.message.message_id, null, text, extra);
+        }
+    }
+}
+
+bot.command('subs', (ctx) => listSubscriptions(ctx, ctx.chat.id));
+
+const callbackQueryTable = {};
+
+callbackQueryTable['subs.list'] = listSubscriptions;
+callbackQueryTable['portal'] = async (ctx, portalId, chatId) => {
+    await displayPortal(ctx, portalId, chatId);
+    await ctx.answerCbQuery();
+};
+
+callbackQueryTable['portal.sub'] = async function(ctx, portalId, chatId) {
+    await pool.query('INSERT INTO portals_subscriptions (portal, id) VALUES ($1, $2) ON CONFLICT (portal, id) DO NOTHING', [portalId, chatId]);
+    await displayPortal(ctx, portalId, chatId);
+    await ctx.answerCbQuery(`Portal added to alerts`);
+};
+
+callbackQueryTable['portal.unsub'] = async function(ctx, portalId, chatId) {
+    await pool.query('DELETE FROM portals_subscriptions WHERE portal = $1 AND id = $2', [portalId, chatId]);
+    await displayPortal(ctx, portalId, chatId);
+    await ctx.answerCbQuery(`Portal removed from alerts`);
+};
+
+bot.on('callback_query', (ctx) => {
+    const [cmd, ...args] = ctx.callbackQuery.data.split(':');
+    if(cmd in callbackQueryTable) {
+        callbackQueryTable[cmd](ctx, ...args);
+    }
+})
 
 bot.on('inline_query', async (ctx) => {
     const MAX_RESULTS = 10;
@@ -65,11 +196,6 @@ bot.on('inline_query', async (ctx) => {
         )`, [`%${query}`, `${query}%`]));
     }
     const results = portals.map(portal => {
-        const ll = `${portal.latE6 / 1e6},${portal.lngE6 / 1e6}`;
-        const intel = `https://intel.ingress.com/intel?z=17&pll=${ll}`;
-        const maps = `https://www.google.com/maps?q=${ll}`;
-        const image = `${process.env.URL}/portal/${portal.id}/image`;
-        const ingress = 'https://ingress.com/launchapp';
         return {
             type: 'article',
             id: portal.id,
@@ -77,13 +203,12 @@ bot.on('inline_query', async (ctx) => {
             thumb_url: portal.image || `${process.env.URL}/img/default-portal-image-512.png`,
             description: shortenAddress(portal.address) + (portal.distance !== undefined ? '\n' + humanDistance(portal.distance) : ''),
             input_message_content: {
-                message_text: `<a href="${portal.image}">&#8203;</a><a href="${image}">📍</a> <a href="${ingress}"><b>${escape(portal.name)}</b></a>
-<a href="${intel}">${escape(shortenAddress(portal.address))}</a> <a href="${maps}">🗺️</a>`,
+                message_text: portalText(portal),
                 parse_mode: 'html',
             },
             reply_markup: {
                 inline_keyboard: [
-                    [{text: '🔔 Add', callback_data: `portal.sub:${portal.id}`}], // 🔕
+                    [{text: 'Invite bot here to enable alerts', url: `https://telegram.me/${bot.botInfo.username}?startgroup=${portal.id}`}],
                 ],
             },
         };
@@ -97,14 +222,12 @@ bot.on('inline_query', async (ctx) => {
 async function start_telegram() {
     const url = process.env.URL || process.env.LT_URL;
     if(url === undefined) {
-            console.log(bot.telegram.botInfo);
-            throw new Error('URL must be provided!');
+        throw new Error('URL must be provided!');
     }
     const [me] = await Promise.all([
         bot.telegram.getMe(),
         bot.telegram.setWebhook(url + process.env.TELEGRAM_ENDPOINT),
     ]);
-    console.log(url + process.env.TELEGRAM_ENDPOINT);
     if(!me.supports_inline_queries) {
         throw new Error('telegram bot must support inline queries');
     }
