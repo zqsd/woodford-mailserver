@@ -7,14 +7,26 @@
         {
             "type": "pwa-node",
             "request": "launch",
-            "name": "Mailserver",
+            "name": "mailserver",
             "skipFiles": [
                 "<node_internals>/**"
             ],
             "args": [],
             "runtimeArgs": ["-r", "dotenv/config"],
             "cwd": "${workspaceFolder}/mailserver",
-            "program": "${workspaceFolder}/mailserver/index.mjs"
+            "program": "${workspaceFolder}/mailserver/main.mjs"
+        },
+        {
+            "type": "pwa-node",
+            "request": "launch",
+            "name": "backweb",
+            "skipFiles": [
+                "<node_internals>/**"
+            ],
+            "args": [],
+            "runtimeArgs": ["-r", "dotenv/config"],
+            "cwd": "${workspaceFolder}/backweb",
+            "program": "${workspaceFolder}/backweb/main.mjs"
         }
     ]
 }
