@@ -2,10 +2,14 @@ import Redis from 'ioredis';
 import express, { query } from 'express';
 import {Telegraf} from 'telegraf';
 import escape from 'escape-html';
+import querystring from 'querystring';
+import fetch from 'node-fetch';
+import fs from 'fs';
 import pool from './db.mjs';
 
 const redis = new Redis({host: process.env.REDIS});
 
+const defaultPortalImage = '/img/default-portal-image-200.png';
 
 function humanDistance(distance) {
     if(distance < 1000) {
@@ -20,7 +24,87 @@ function humanDistance(distance) {
 }
 
 function shortenAddress(address) {
-    return address.split(', ').slice(-2).join(', ');
+    try {
+        return address.split(', ').slice(-2).join(', ');
+    }
+    catch(e) {
+        return address;
+    }
+}
+
+function reverse(latitude, longitude) {
+    return fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${latitude}&lon=${longitude}`).then(res => res.json()).then((res) => {
+        if(res.error) {
+            return Object.assign({}, res.error, {
+                lat: latitude,
+                lon: longitude, 
+            });
+        }
+        return res;
+        //{"railway":"Léon Blum","road":"Place de Sparte","neighbourhood":"Antigone","suburb":"Centre","city":"Montpellier","municipality":"Montpellier","county":"Hérault","state":"Occitania","country":"France","postcode":"34064","country_code":"fr"}
+        //{"building":"Gare de Montpellier Saint-Roch","road":"Rue des Deux Ponts","neighbourhood":"Gares","suburb":"Centre","city":"Montpellier","municipality":"Montpellier","county":"Hérault","state":"Occitania","country":"France","postcode":"34062","country_code":"fr"}
+        //{"road":"Place Paul Vigné d'Octon","residential":"Résidence du 4 août 1789","suburb":"Port Marianne","city":"Montpellier","municipality":"Montpellier","county":"Hérault","state":"Occitania","country":"France","postcode":"34064","country_code":"fr"}
+        //{"leisure":"Boulodrome des Patriotes","road":"Place des Patriotes","neighbourhood":"Port Marianne","suburb":"Port Marianne","city":"Montpellier","municipality":"Montpellier","county":"Hérault","state":"Occitania","country":"France","country_code":"fr"}
+        //{"amenity":"Hôtel de Ville","house_number":"1","road":"Place Georges Frêche","neighbourhood":"Hameau de Moularès","suburb":"Prés d'Arènes","city":"Montpellier","municipality":"Montpellier","county":"Hérault","state":"Occitania","country":"France","country_code":"fr"}
+        //{"suburb":"Cap d'Agde","town":"Agde","municipality":"Béziers","county":"Hérault","state":"Occitania","country":"France","postcode":"34300","country_code":"fr"}
+        //{"tourism":"Tour Eiffel 2e étage","road":"Esplanade des Ouvriers de la Tour Eiffel","neighbourhood":"Quartier du Gros-Caillou","suburb":"7th Arrondissement","city":"Paris","municipality":"Paris","county":"Paris","state":"Ile-de-France","country":"France","postcode":"75007","country_code":"fr"}
+    });
+}
+
+function nameFromReverse({address}) {
+    if(address.tourism) {
+        return address.tourism;
+    }
+    if(address.amenity) {
+        return address.amenity;
+    }
+    if(address.leisure) {
+        return address.leisure;
+    }
+    if(address.building) {
+        return address.building;
+    }
+    if(address.residential) {
+        return address.residential;
+    }
+    if(address.railway) {
+        return address.railway;
+    }
+    if(address.road) {
+        return address.road;
+    }
+    return 'Unknown location';
+}
+
+function addressFromReverse({latitude, longitude, address}) {
+    if(address) {
+        const names = [];
+
+        const city = [];
+        if(address.postcode) {
+            city.push(address.postcode);
+        }
+        if(address.city) {
+            city.push(address.city);
+        }
+        else if(address.town) {
+            city.push(address.town);
+        }
+        else if(address.village) {
+            city.push(address.village);
+        }
+        else if(address.municipality) {
+            city.push(address.municipality);
+        }
+        names.push(city.join(' '));
+
+        names.push(address.country);
+
+        return names.join(', ');
+    }
+    else {
+        return `${latitude},${longitude}`;
+    }
 }
 
 const token = process.env.TELEGRAM_TOKEN;
@@ -107,14 +191,36 @@ function portalText(portal) {
     const ll = `${portal.latE6 / 1e6},${portal.lngE6 / 1e6}`;
     const intel = `https://intel.ingress.com/intel?z=17&pll=${ll}`;
     const maps = `https://www.google.com/maps?q=${ll}`;
-    const image = `${process.env.URL}/portal/${portal.id}/image`;
+    const image = `${process.env.URL}/portal/${ll}/image`;
     const ingress = 'https://ingress.com/launchapp';
     return `<a href="${portal.image}">&#8203;</a><a href="${image}">📍</a> <a href="${ingress}"><b>${escape(portal.name)}</b></a>
 <a href="${maps}">🌍</a> <a href="${intel}">${escape(shortenAddress(portal.address))}</a>`;
 }
 
+async function createPortalAt(client, latE6, lngE6) {
+    const rev = await reverse(latE6 / 1e6, lngE6 / 1e6);
+    const name = nameFromReverse(rev);
+    const address = addressFromReverse(rev);
+
+    const {rows: [portal]} = await client.query('INSERT INTO portals ("name", "address", "latE6", "lngE6") VALUES ($1, $2, $3, $4) RETURNING *', [
+        name,
+        address,
+        latE6,
+        lngE6,
+    ]);
+    return portal;
+}
+
 async function displayPortal(ctx, portalId, chatId, inlineMessageId) {
-    const {rows: [portal]} = await pool.query('SELECT portals.*, portals_subscriptions.portal AS subscribed FROM portals LEFT JOIN portals_subscriptions ON portals.id = portals_subscriptions.portal AND portals_subscriptions.id = $2 WHERE portals.id = $1', [portalId, chatId]);
+    let portal;
+    if(portalId.startsWith('null:')) {
+        const [latE6, lngE6] = portalId.split(':').slice(1).map(n => parseInt(n));
+        portal = await createPortalAt(pool, latE6, lngE6);
+        portalId = portal.id;
+    }
+    else {
+        ({rows: [portal]} = await pool.query('SELECT portals.*, portals_subscriptions.portal AS subscribed FROM portals LEFT JOIN portals_subscriptions ON portals.id = portals_subscriptions.portal AND portals_subscriptions.id = $2 WHERE portals.id = $1', [portalId, chatId]));
+    }
     if(portal) {
         const text = portalText(portal);
         const extra = {
@@ -173,8 +279,24 @@ bot.on('callback_query', (ctx) => {
 
 bot.on('inline_query', async (ctx) => {
     const MAX_RESULTS = 10;
-    const {inlineQuery: {query, location}} = ctx;
+    let {inlineQuery: {query, location}} = ctx;
     let portals;
+    let intelPortal;
+    if(query.startsWith('https://intel.ingress.com/')) {
+        const args = querystring.parse(query.substr(query.indexOf('?') + 1));
+        if(args.pll) {
+            const [latitude, longitude] = args.pll.split(',').map(parseFloat);
+            location = {latitude, longitude};
+            intelPortal = location;
+            query = '';
+        }
+        else if(args.ll) {
+            const [latitude, longitude] = args.pll.split(',').map(parseFloat);
+            location = {latitude, longitude};
+            query = '';
+        }
+    }
+
     if(location) {
         ({rows: portals} = await pool.query(`SELECT DISTINCT id, name, address, image, "latE6", "lngE6", distance FROM (
             SELECT *, ST_Distance(geog, ST_SetSRID(ST_Makepoint($3, $4), 4326)::geography) AS distance FROM (
@@ -195,13 +317,36 @@ bot.on('inline_query', async (ctx) => {
             ORDER BY score DESC LIMIT ${MAX_RESULTS}
         )`, [`%${query}`, `${query}%`]));
     }
+
+    if(intelPortal) {
+        const latE6 = Math.round(location.latitude * 1e6),
+              lngE6 = Math.round(location.longitude * 1e6);
+        const latitude = latE6 / 1e6,
+              longitude = lngE6 / 1e6;
+        // intel portal link matches no known portal
+        if(portals.length > 0 && (latE6 !== parseInt(portals[0].latE6) || lngE6 !== parseInt(portals[0].lngE6)) || portals.length === 0) {
+            const rev = await reverse(latitude, longitude);
+            const name = nameFromReverse(rev);
+            const address = addressFromReverse(rev);
+            // create fake portal
+            portals = [{
+                id: `null:${latE6}:${lngE6}`,
+                name,
+                image: `${process.env.URL}${defaultPortalImage}`,
+                address,
+                latE6,
+                lngE6,
+            }].concat(portals);
+        }
+    }
+
     const results = portals.map(portal => {
         return {
             type: 'article',
             id: portal.id,
             title: portal.name || 'Unknown portal',
-            thumb_url: portal.image || `${process.env.URL}/img/default-portal-image-512.png`,
-            description: shortenAddress(portal.address) + (portal.distance !== undefined ? '\n' + humanDistance(portal.distance) : ''),
+            thumb_url: portal.image || `${process.env.URL}${defaultPortalImage}`,
+            description: portal.address + (portal.distance !== undefined ? '\n' + humanDistance(portal.distance) : ''),
             input_message_content: {
                 message_text: portalText(portal),
                 parse_mode: 'html',
@@ -247,18 +392,48 @@ const app = express();
 app.use(bot.webhookCallback(process.env.TELEGRAM_ENDPOINT));
 //app.get('/', (req, res) => res.send('Hello World!'));
 
-app.get('/portal/:portalId/image', async (req, res) => {
-    const {rows: [{image}]} = await pool.query('SELECT image FROM portals WHERE id = $1', [req.params.portalId]);
-    if(image) {
-        if(req.get('User-Agent') === 'TelegramBot (like TwitterBot)') {
-            res.redirect(image);
-        }
-        else {
-            res.redirect(image + '=s0');
-        }
+/**
+ * Redirects to portal full size image, or make a thumbnail for telegram since it won't make a thumbnail for bigger images
+ */
+function portalImageThumbnail(req, res, portal) {
+    if(req.get('User-Agent') === 'TelegramBot (like TwitterBot)') {
+        const ll = `${portal.latE6/1e6},${portal.lngE6/1e6}`;
+        const url = portal.image ? `${portal.image}=s200` : `http://maps.googleapis.com/maps/api/staticmap?center=${ll}&zoom=17&size=267x200&style=visibility:on%7Csaturation:-50%7Cinvert_lightness:true%7Chue:0x131c1c&style=feature:water%7Cvisibility:on%7Chue:0x005eff%7Cinvert_lightness:true&style=feature:poi%7Cvisibility:off&style=feature:transit%7Cvisibility:off&markers=icon:http://commondatastorage.googleapis.com/ingress.com/img/map_icons/marker_images/neutral_icon.png%7Cshadow:false%7C${ll}&key=${process.env.MAPS_KEY}`;
+        fetch(url).then(stream => {
+            res.writeHead(200, {'Content-Type': stream.headers.get('content-type')});
+            stream.body.on('end', () => res.end());
+            stream.body.pipe(res);
+        });
     }
     else {
-        res.redirect('/img/default-portal-image-512.png');
+        if(portal.image) {
+            res.redirect(`${portal.image}=s0`);
+        }
+        else {
+            res.redirect('https://commondatastorage.googleapis.com/ingress.com/img/default-portal-image.png');
+        }
+    }
+}
+
+app.get('/portal/:latitude,:longitude/image', async (req, res) => {
+    const latE6 = Math.round(req.params.latitude * 1e6),
+          lngE6 = Math.round(req.params.longitude * 1e6);
+    const {rows: [portal]} = await pool.query('SELECT name, address, image, "latE6", "lngE6" FROM portals WHERE "latE6" = $1 AND "lngE6" = $2', [latE6, lngE6]);
+    if(portal) {
+        return portalImageThumbnail(req, res, portal);
+    }
+    else {
+        res.sendStatus(404);
+    }
+});
+
+app.get('/portal/:portalId/image', async (req, res) => {
+    const {rows: [portal]} = await pool.query('SELECT name, address, image, "latE6", "lngE6" FROM portals WHERE id = $1', [req.params.portalId]);
+    if(portal) {
+        return portalImageThumbnail(req, res, portal);
+    }
+    else {
+        res.sendStatus(404);
     }
 });
 
