@@ -75,8 +75,15 @@ attacked by ` + attackers.map(attacker => `<b>${attacker}</b>`).join(', ');
                 }));
             }
             else {
+                const data = `portal.unsub:${portal.latitude},${portal.longitude}:${chatId}`;
+                console.log(data.length, data);
                 const result = await bot.telegram.sendMessage(chatId, text, {
                     parse_mode: 'HTML',
+                    reply_markup: {
+                        inline_keyboard: [
+                            [{text: '🔕 Remove', callback_data: `portal.unsub:${portal.latitude},${portal.longitude}:${chatId}`}],
+                        ],
+                    },        
                 });
                 await redis.hset(key, 'appdata', JSON.stringify({
                     messageId: result.message_id,

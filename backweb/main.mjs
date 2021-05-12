@@ -301,11 +301,18 @@ callbackQueryTable['portal.sub'] = async function(ctx, portalId, chatId) {
 
 callbackQueryTable['portal.unsub'] = async function(ctx, portalId, chatId) {
     await db.transaction(async client => {
-        const portal = await client.one('SELECT * FROM portals WHERE id = $1', [portalId]);
+        let portal;
+        if(portalId.indexOf(',') > -1) {
+            const [latitude, longitude] = portalId.split(',').map(parseFloat);
+            portal = await client.one('SELECT * FROM portals WHERE "latE6" = $1 AND "lngE6" = $2', [latitude * 1e6, longitude * 1e6]);
+        }
+        else {
+            portal = await client.one('SELECT * FROM portals WHERE id = $1', [portalId]);
+        }
         await unsubPortal(client, portal, chatId);
+        await displayPortal(ctx, portal.id, chatId);
+        await ctx.answerCbQuery(`Portal removed from alerts`);
     });
-    await displayPortal(ctx, portalId, chatId);
-    await ctx.answerCbQuery(`Portal removed from alerts`);
 };
 
 bot.on('callback_query', (ctx) => {
