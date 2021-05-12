@@ -3,7 +3,7 @@ import {db, ensureTransaction} from '../common/db.mjs';
 import {Telegraf} from 'telegraf';
 import Redlock from 'redlock';
 import fs from 'fs';
-import {syncAllSubscriptions} from '../common/subscriptions.mjs';
+import {syncAllSubscriptions, getPortalSubscriptions} from '../common/subscriptions.mjs';
 
 const redis = new Redis({host: process.env.REDIS});
 const redlock = new Redlock([redis]);
@@ -108,7 +108,7 @@ export default function pushDamagesFromReport(report) {
     return Promise.all(report.damages.map(async damage => {
         const portal = report.portals[damage.portal];
         const attacker = report.agents[damage.attacker];
-        const subscriptions = getPortalSubscriptions(portal);
+        const subscriptions = await getPortalSubscriptions(portal);
 
         const damages = [];
         if(damage.resonators > 0) {
@@ -120,7 +120,7 @@ export default function pushDamagesFromReport(report) {
         if(damage.links?.length > 0) {
             damages.push(`${damage.links.length} links`);
         }
-        console.log(`damage on ${portal.name} by ${attacker.name}: ${damages.join(', ')}`);
+        console.log(`damage on ${portal.name} by ${attacker.name}: ${damages.join(', ')}. ${subscriptions.length} subscriptions`);
         //console.log(report.damages);
 
         return Promise.all(subscriptions.map(subscription => {

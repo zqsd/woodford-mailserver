@@ -31,7 +31,7 @@ function verifyMail(buffer) {
 function pushPortalsFromReport(report) {
     return db.transaction(client => {
         // upsert portals
-        return client.query(format('INSERT INTO portals ("name", "address", "image", "latE6", "lngE6", "lastAlert") VALUES %L ON CONFLICT ("name", "address") DO UPDATE SET "image" = excluded."image", "latE6" = excluded."latE6", "lngE6" = excluded."lngE6", "lastAlert" = excluded."lastAlert"', Object.values(report.portals).map(portal => {
+        return client.query(format('INSERT INTO portals ("name", "address", "image", "latE6", "lngE6", "lastAlert") VALUES %L ON CONFLICT ("latE6", "lngE6") DO UPDATE SET "name" = excluded."name", "image" = excluded."image", "latE6" = excluded."latE6", "lngE6" = excluded."lngE6", "lastAlert" = GREATEST(portals."lastAlert", excluded."lastAlert")', Object.values(report.portals).map(portal => {
             return [
                 portal.name,
                 portal.address,

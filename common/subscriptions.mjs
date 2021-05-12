@@ -8,7 +8,12 @@ function portalNameAddressKey(portal) {
 }
 
 function portalLLKey(portal) {
-    return `portal(ll).subs:${portal.latE6 / 1e6, portal.lngE6 / 1e6}`;
+    if(portal.latitude !== undefined && portal.longitude !== undefined) {
+        return `portal(ll).subs:${portal.latitude},${portal.longitude}`;
+    }
+    else {
+        return `portal(ll).subs:${portal.latE6 / 1e6},${portal.lngE6 / 1e6}`;
+    }
 }
 
 export async function getAllSubscriptions(client) {
@@ -21,7 +26,8 @@ export async function syncAllSubscriptions(client) {
     let subscriptionsCount = 0;
     const subs = await getAllSubscriptions(client);
     for(const portal of subs) {
-        const key = portalNameAddressKey(portal);
+        const key = portalLLKey(portal);
+        //console.log(key, portal.subscriptions);
         await redis.multi().del(key).sadd(key, portal.subscriptions).exec();
         subscriptionsCount += portal.subscriptions.length;
     }
@@ -30,7 +36,8 @@ export async function syncAllSubscriptions(client) {
 }
 
 export async function getPortalSubscriptions(portal) {
-    return await redis.smembers(portalLLKey(portal));
+    const key = portalLLKey(portal);
+    return await redis.smembers(key);
 }
 
 export async function subPortal(client, portal, chatId) {
@@ -39,7 +46,6 @@ export async function subPortal(client, portal, chatId) {
 }
 
 export async function unsubPortal(client, portal, chatId) {
-    console.log('unsub', portal, chatId)
     await client.query('DELETE FROM portals_subscriptions WHERE portal = (SELECT id FROM portals WHERE "latE6" = $1 AND "lngE6" = $2) AND chat = $3', [portal.latE6, portal.lngE6, chatId]);
     await redis.srem(portalLLKey(portal), chatId);
 }
