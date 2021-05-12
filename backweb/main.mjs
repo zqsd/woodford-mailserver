@@ -5,7 +5,8 @@ import escape from 'escape-html';
 import querystring from 'querystring';
 import fetch from 'node-fetch';
 import fs from 'fs';
-import pool from './db.mjs';
+import {db, ensureTransaction} from '../common/db.mjs';
+import {subPortal, unsubPortal, unsubChat, migrateChat} from '../common/subscriptions.mjs';
 
 const redis = new Redis({host: process.env.REDIS});
 
@@ -159,11 +160,35 @@ bot.on('text', async (ctx, next) => {
 
 bot.on('chosen_inline_result', onChosenInlineResult);
 
+function log(ctx) {
+    console.log(ctx.chat);
+    console.log(ctx.from);
+    console.log(ctx.message);
+    console.log('-');
+}
+
+bot.on('new_chat_participant', log);
+bot.on('left_chat_participant', log);
+bot.on('new_chat_title', log);
+bot.on('group_chat_created', log);
+bot.on('supergroup_chat_created', log);
+bot.on('channel_chat_created', log);
+bot.on(['migrate_to_chat_id', 'migrate_from_chat_id'], ctx => {
+    return db.transaction(client => {
+        if(ctx.message.migrate_from_chat_id) {
+            return migrateChat(client, ctx.message.migrate_from_chat_id, ctx.chat.id);
+        }
+        else if(ctx.message.migrate_to_chat_id) {
+            log(ctx);
+        }
+    });
+});
 
 bot.help((ctx) => ctx.reply('Send me a sticker'))
 
 async function listSubscriptions(ctx, chatId) {
-    const {rows: portals} = await pool.query('SELECT p.* FROM portals_subscriptions AS ps INNER JOIN portals AS p ON p.id = ps.portal WHERE ps.id = $1 ORDER BY name ASC', [chatId]);
+    bot.telegram.sendChatAction(chatId, `typing`);
+    const portals = await db.all('SELECT p.* FROM portals_subscriptions AS ps INNER JOIN portals AS p ON p.id = ps.portal WHERE ps.chat = $1 ORDER BY name ASC', [chatId]);
 
     const text = portals.length > 0 ? 'Subscribed to portals :' : 'No subscribed portal';
     const extra = {
@@ -202,7 +227,7 @@ async function createPortalAt(client, latE6, lngE6) {
     const name = nameFromReverse(rev);
     const address = addressFromReverse(rev);
 
-    const {rows: [portal]} = await client.query('INSERT INTO portals ("name", "address", "latE6", "lngE6") VALUES ($1, $2, $3, $4) RETURNING *', [
+    const portal = await client.one('INSERT INTO portals ("name", "address", "latE6", "lngE6") VALUES ($1, $2, $3, $4) RETURNING *', [
         name,
         address,
         latE6,
@@ -215,11 +240,11 @@ async function displayPortal(ctx, portalId, chatId, inlineMessageId) {
     let portal;
     if(portalId.startsWith('null:')) {
         const [latE6, lngE6] = portalId.split(':').slice(1).map(n => parseInt(n));
-        portal = await createPortalAt(pool, latE6, lngE6);
+        portal = await createPortalAt(db, latE6, lngE6);
         portalId = portal.id;
     }
     else {
-        ({rows: [portal]} = await pool.query('SELECT portals.*, portals_subscriptions.portal AS subscribed FROM portals LEFT JOIN portals_subscriptions ON portals.id = portals_subscriptions.portal AND portals_subscriptions.id = $2 WHERE portals.id = $1', [portalId, chatId]));
+        portal = await db.one('SELECT portals.*, portals_subscriptions.portal AS subscribed FROM portals LEFT JOIN portals_subscriptions ON portals.id = portals_subscriptions.portal AND portals_subscriptions.chat = $2 WHERE portals.id = $1', [portalId, chatId]);
     }
     if(portal) {
         const text = portalText(portal);
@@ -228,7 +253,7 @@ async function displayPortal(ctx, portalId, chatId, inlineMessageId) {
             reply_markup: {
                 inline_keyboard: [
                     portal.subscribed ? [{ text: '🔕 Remove', callback_data: `portal.unsub:${portal.id}:${chatId}` }] : [{text: '🔔 Add', callback_data: `portal.sub:${portal.id}:${chatId}`}],
-                    [{text: '⮨ Back to list', callback_data: `subs.list:${chatId}`}],
+                    [{text: '⬅ Back to list', callback_data: `subs.list:${chatId}`}],
                 ],
             },
         };
@@ -249,6 +274,13 @@ async function displayPortal(ctx, portalId, chatId, inlineMessageId) {
 }
 
 bot.command('subs', (ctx) => listSubscriptions(ctx, ctx.chat.id));
+bot.command('unsuball', async (ctx) => {
+    await db.transaction(async (client) => {
+        bot.telegram.sendChatAction(ctx.chat.id, `typing`);
+        await unsubChat(client, ctx.chat.id);
+        ctx.reply(`All subscriptions from current chat removed`);
+    });
+});
 
 const callbackQueryTable = {};
 
@@ -259,13 +291,19 @@ callbackQueryTable['portal'] = async (ctx, portalId, chatId) => {
 };
 
 callbackQueryTable['portal.sub'] = async function(ctx, portalId, chatId) {
-    await pool.query('INSERT INTO portals_subscriptions (portal, id) VALUES ($1, $2) ON CONFLICT (portal, id) DO NOTHING', [portalId, chatId]);
+    await db.transaction(async client => {
+        const portal = await client.one('SELECT * FROM portals WHERE id = $1', [portalId]);
+        await subPortal(client, portal, chatId);
+    });
     await displayPortal(ctx, portalId, chatId);
     await ctx.answerCbQuery(`Portal added to alerts`);
 };
 
 callbackQueryTable['portal.unsub'] = async function(ctx, portalId, chatId) {
-    await pool.query('DELETE FROM portals_subscriptions WHERE portal = $1 AND id = $2', [portalId, chatId]);
+    await db.transaction(async client => {
+        const portal = await client.one('SELECT * FROM portals WHERE id = $1', [portalId]);
+        await unsubPortal(client, portal, chatId);
+    });
     await displayPortal(ctx, portalId, chatId);
     await ctx.answerCbQuery(`Portal removed from alerts`);
 };
@@ -298,24 +336,24 @@ bot.on('inline_query', async (ctx) => {
     }
 
     if(location) {
-        ({rows: portals} = await pool.query(`SELECT DISTINCT id, name, address, image, "latE6", "lngE6", distance FROM (
+        portals = await db.all(`SELECT DISTINCT id, name, address, image, "latE6", "lngE6", distance FROM (
             SELECT *, ST_Distance(geog, ST_SetSRID(ST_Makepoint($3, $4), 4326)::geography) AS distance FROM (
                 (SELECT *, 0 AS score FROM portals WHERE lname LIKE $1 LIMIT ${MAX_RESULTS})
                 UNION
                 (SELECT *, 1 AS score FROM portals WHERE lname LIKE $2 LIMIT ${MAX_RESULTS})
             )
             ORDER BY score DESC, distance ASC LIMIT ${MAX_RESULTS}
-        )`, [`%${query}`, `${query}%`, location.longitude, location.latitude]));
+        )`, [`%${query}`, `${query}%`, location.longitude, location.latitude]);
     }
     else {
-        ({rows: portals} = await pool.query(`SELECT DISTINCT id, name, address, image, "latE6", "lngE6" FROM (
+        portals = await db.all(`SELECT DISTINCT id, name, address, image, "latE6", "lngE6" FROM (
             SELECT * FROM (
                 (SELECT *, 0 AS score FROM portals WHERE lname LIKE $1 LIMIT ${MAX_RESULTS})
                 UNION
                 (SELECT *, 1 AS score FROM portals WHERE lname LIKE $2 LIMIT ${MAX_RESULTS})
             )
             ORDER BY score DESC LIMIT ${MAX_RESULTS}
-        )`, [`%${query}`, `${query}%`]));
+        )`, [`%${query}`, `${query}%`]);
     }
 
     if(intelPortal) {
@@ -418,7 +456,7 @@ function portalImageThumbnail(req, res, portal) {
 app.get('/portal/:latitude,:longitude/image', async (req, res) => {
     const latE6 = Math.round(req.params.latitude * 1e6),
           lngE6 = Math.round(req.params.longitude * 1e6);
-    const {rows: [portal]} = await pool.query('SELECT name, address, image, "latE6", "lngE6" FROM portals WHERE "latE6" = $1 AND "lngE6" = $2', [latE6, lngE6]);
+    const portal = await db.one('SELECT name, address, image, "latE6", "lngE6" FROM portals WHERE "latE6" = $1 AND "lngE6" = $2', [latE6, lngE6]);
     if(portal) {
         return portalImageThumbnail(req, res, portal);
     }
@@ -428,7 +466,7 @@ app.get('/portal/:latitude,:longitude/image', async (req, res) => {
 });
 
 app.get('/portal/:portalId/image', async (req, res) => {
-    const {rows: [portal]} = await pool.query('SELECT name, address, image, "latE6", "lngE6" FROM portals WHERE id = $1', [req.params.portalId]);
+    const portal = await db.one('SELECT name, address, image, "latE6", "lngE6" FROM portals WHERE id = $1', [req.params.portalId]);
     if(portal) {
         return portalImageThumbnail(req, res, portal);
     }

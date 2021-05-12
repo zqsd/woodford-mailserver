@@ -1,8 +1,9 @@
 import Redis from 'ioredis';
-import db from './db.mjs';
+import {db, ensureTransaction} from '../common/db.mjs';
 import {Telegraf} from 'telegraf';
 import Redlock from 'redlock';
 import fs from 'fs';
+import {syncAllSubscriptions} from '../common/subscriptions.mjs';
 
 const redis = new Redis({host: process.env.REDIS});
 const redlock = new Redlock([redis]);
@@ -14,24 +15,7 @@ redis.defineCommand("portalCountDamage", {
     lua: fs.readFileSync('./damage.lua'),
 });
 
-function portalNameAddressKey(portal) {
-    return `portal(na).subs:${portal.name, portal.address}`;
-}
-
-async function fetchSubscriptions() {
-    await db.transaction(async client => {
-        let subscriptionsCount = 0;
-        const dbSubcriptions = await client.query('SELECT p.name, p.address, p.image, p."latE6", p."lngE6", s.subscriptions FROM (SELECT portal, ARRAY_AGG(id) as subscriptions FROM portals_subscriptions GROUP BY portal) AS s INNER JOIN portals as p ON p.id = s.portal');
-        for(const portal of dbSubcriptions.rows) {
-            const key = portalNameAddressKey(portal);
-            await redis.multi().del(key).sadd(key, portal.subscriptions).exec();
-            subscriptionsCount += portal.subscriptions.length;
-        }
-        console.log(`loaded ${subscriptionsCount} subscriptions on ${dbSubcriptions.rows.length} portals`);
-    });
-
-}
-fetchSubscriptions();
+syncAllSubscriptions();
 
 async function sendPortalAlert(chatId, portal, damage, attacker, report) {
     const key = `portal(${portal.latitude},${portal.longitude}),${chatId}`;
@@ -102,11 +86,8 @@ attacked by ` + attackers.map(attacker => `<b>${attacker}</b>`).join(', ');
         }
         catch(e) {
             if(e.message === '400: Bad Request: chat not found') {
-                await Promise.all([
-                    redis.spop(portalNameAddressKey(portal), chatId),
-                    db.query('DELETE FROM portals_subscriptions WHERE id = $3 AND portal = (SELECT id FROM portals WHERE name = $1 AND address = $2)', [portal.name, portal.address, chatId]),
-                ]);
-                console.log(`removed portal ${portal.name} from chat ${chatId}`);
+                await unsubChat(db, chatId);
+                console.log(`chat ${chatId} not found, removed froms subscription`);
             }
             else {
                 throw e;
@@ -120,7 +101,7 @@ export default function pushDamagesFromReport(report) {
     return Promise.all(report.damages.map(async damage => {
         const portal = report.portals[damage.portal];
         const attacker = report.agents[damage.attacker];
-        const subscriptions = await redis.smembers(portalNameAddressKey(portal));
+        const subscriptions = getPortalSubscriptions(portal);
 
         const damages = [];
         if(damage.resonators > 0) {

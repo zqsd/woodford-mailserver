@@ -26,9 +26,8 @@
   "homepage": "https://github.com/zqsd/woodford-mailserver#readme",
   "dependencies": {
     "bull": "^3.22.0",
-    "cockroach": "github:zqsd/cockroach",
     "dkim": "^0.7.2",
-    "ingress-dmgparser": "github:zqsd/ingress-dmgparser",
+    "ingress-dmgparser": "git+https://github.com/zqsd/ingress-dmgparser.git",
     "pg-format": "^1.0.4",
     "redlock": "^4.2.0",
     "smtp-server": "^3.8.0",

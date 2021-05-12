@@ -1,0 +1,6 @@
+{
+  "dependencies": {
+    "cockroach": "git+https://github.com/zqsd/cockroach.git",
+    "ioredis": "^4.27.2"
+  }
+}

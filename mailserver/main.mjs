@@ -3,7 +3,7 @@ import {simpleParser} from 'mailparser';
 //const SMTPServer = require('smtp-server').SMTPServer;
 import DKIM from 'dkim';
 import parseMail from 'ingress-dmgparser'; //const parseMail = require('ingress-dmgparser');
-import db from './db.mjs';
+import {db, ensureTransaction} from '../common/db.mjs';
 import format from 'pg-format';
 import pushDamagesFromReport from './damageReportWorker.mjs';
 
