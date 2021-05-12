@@ -76,7 +76,6 @@ attacked by ` + attackers.map(attacker => `<b>${attacker}</b>`).join(', ');
             }
             else {
                 const data = `portal.unsub:${portal.latitude},${portal.longitude}:${chatId}`;
-                console.log(data.length, data);
                 const result = await bot.telegram.sendMessage(chatId, text, {
                     parse_mode: 'HTML',
                     reply_markup: {
